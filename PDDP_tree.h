@@ -13,7 +13,9 @@
 #include <map>
 #include <set>
 #include <utility>
+#include <algorithm>
 #include <string_view>
+#include <fstream>
 
 namespace nzk{
     template <typename T=double>struct PDDP;
@@ -44,15 +46,16 @@ namespace nzk{
         }
     }
 
-    template <typename T>
-    using PDDP_codebook=std::vector<std::pair<T,std::vector<bool>>>;
+    template <typename T,typename Y=bool>
+    using PDDP_codebook=std::vector<std::pair<T,std::vector<Y>>>;
 
     template <typename T>
     struct PDDP{
         using node_type=PDDP_node<T>;
         node_type root_node;
         unsigned size=0;
-//        std::map<T,std::vector<bool>> code;
+        std::map<T,T> code_cluster;
+        std::unique_ptr<PDDP_codebook<T>> inner_codebook= nullptr;
 
         static constexpr double ita=1;
         static constexpr double e=500;
@@ -62,35 +65,44 @@ namespace nzk{
         PDDP()= default;
         PDDP(std::initializer_list<T> args);
 
+        template <typename Y>
+        PDDP(const PDDP_codebook<T,Y> &codebook, std::map<T,T> &&code_clu);
+
         template <typename Container>
         explicit PDDP(const Container &src);
 
         virtual ~PDDP();
 
-        void DDP_insert(const T &t);
-        std::vector<bool> code(const T &t)const;
-//        void DDP_expand(node_type *node);
+        void DP_insert(const T &t);
+        std::vector<bool> code_of(const T &t);
+        void DDP_expand(node_type *node);
         static void check_prunned(node_type *p);
 
         std::size_t decode(std::vector<T> &tar,std::string_view code);
 
-        PDDP_codebook<T> codebook()const;
+        const PDDP_codebook<T, bool> & codebook();
+
+        void gen_codebook();
 
         void _make_codebook(PDDP_codebook<T> &book,const node_type *pnode,std::vector<bool> v={}) const;
+
+        template <typename Y>
+        bool _constr_code(const T &val, const std::vector<Y> &code);
     };
 
     template<typename T>
     PDDP<T>::PDDP(std::initializer_list<T> args) {
         for(const auto &val:args){
-            DDP_insert(val);
+            DP_insert(val);
         }
 
         check_prunned(&root_node);
     }
 
     template<typename T>
-    void PDDP<T>::DDP_insert(const T &t) {
+    void PDDP<T>::DP_insert(const T &t) {
         auto *p=&root_node;
+        std::vector<decltype(p)> to_be_expanded;
 //        std::vector<bool > rep;
         T rem=t;
         T alpha_base=1;
@@ -98,6 +110,9 @@ namespace nzk{
         T rp=0;
         T err=error_bound;
         while (rem>err){
+            if(p->val.has_value()){
+                to_be_expanded.push_back(p);
+            }
             while (rem*2<1){
                 rem*=2;
                 err*=2;
@@ -107,12 +122,12 @@ namespace nzk{
                 if(p->left== nullptr){
                     p->left=new node_type;
                 }
-                else if(p->left->val.has_value()&&p->left->val!=t){
+                /*else if(p->left->val.has_value()&&p->left->val!=t){
                     auto q=p->left;
                     p->left=new node_type{q};
 
 //                    code.at(q->value).push_back(0);
-                }
+                }*/
 
                 p=p->left;
             }
@@ -127,15 +142,27 @@ namespace nzk{
             if(p->right== nullptr){
                 p->right=new node_type;
             }
-            else if(p->right->val.has_value()&&p->right->val!=t){
+            /*else if(p->right->val.has_value()&&p->right->val!=t){
                 auto q=p->right;
                 p->right=new node_type{q};
 //                code.at(q->value).push_back(0);
-            }
+            }*/
 
             p=p->right;
         }
-        if(p==&root_node||p->left||p->right){
+
+        if(!p->val.has_value()){
+            ++size;
+            p->val=t;
+        } else{
+            code_cluster[t]=p->val.value();
+        }
+
+        for(auto &ptr:to_be_expanded){
+            DDP_expand(ptr);
+        }
+
+        /*if(p==&root_node||p->left||p->right){
             while (p->left){
                 p=p->left;
             }
@@ -153,55 +180,20 @@ namespace nzk{
                 ++size;
             }
             p->val=t;
-        }
-
-
-
-        /*for(const auto &i:rep){
-            if(i== false){
-                if(p->left== nullptr){
-                    p->left=new node_type;
-                }
-                else if(!p->left->left&&!p->left->right){
-                    auto q=p->left;
-                    p->left=new node_type{-1,q};
-
-                    code.at(q->value).push_back(0);
-                }
-
-                p=p->left;
-            } else{
-                if(p->right== nullptr){
-                    p->right=new node_type;
-                }
-                else if(!p->right->left&&!p->right->right){
-                    auto q=p->right;
-                    p->right=new node_type{-1,q};
-                    code.at(q->value).push_back(0);
-                }
-
-                p=p->right;
-            }
         }*/
-
-
-//        code.emplace(t,std::move(rep));
     }
 
-    /*template<typename T>
+    template<typename T>
     void PDDP<T>::DDP_expand(PDDP::node_type *node) {
-        auto val=node->value;
-        node->value=-1;
+        auto val=node->val.value();
+        node->val.reset();
         auto p=node;
-        auto &rep=code.at(val);
         while (p->left!= nullptr){
             p=p->left;
-            rep.push_back(0);
         }
 
-        p->left=new node_type{val};
-        rep.push_back(0);
-    }*/
+        p->left=new node_type(val);
+    }
 
     template<typename T>
     void PDDP<T>::check_prunned(PDDP::node_type *p) {
@@ -267,19 +259,18 @@ namespace nzk{
     }
 
     template<typename T>
-    PDDP_codebook<T> PDDP<T>::codebook() const {
-        PDDP_codebook<T> book;
-        book.reserve(size);
-
-        _make_codebook(book,&root_node);
-        return book;
+    const PDDP_codebook<T, bool> & PDDP<T>::codebook() {
+        if(!inner_codebook){
+            gen_codebook();
+        }
+        return *inner_codebook;
     }
 
     template<typename T>
     template <typename Container>
     PDDP<T>::PDDP(const Container &s) {
         for(const auto &t:s){
-            DDP_insert(t);
+            DP_insert(t);
         }
 
         check_prunned(&root_node);
@@ -315,8 +306,24 @@ namespace nzk{
     }
 
     template<typename T>
-    std::vector<bool> PDDP<T>::code(const T &t) const {
-        std::vector<bool> rtv;
+    std::vector<bool> PDDP<T>::code_of(const T &t) {
+        T val=t;
+        if(auto it=code_cluster.find(t);it!=code_cluster.end()){
+            val=it->second;
+        }
+        if(!inner_codebook){
+            gen_codebook();
+        }
+
+        auto it=std::lower_bound(inner_codebook->begin(),inner_codebook->end(),std::make_pair(val,std::vector<bool>{}),[](const auto &a, const auto &b){return a.first<b.first;});
+
+        if(it==inner_codebook->end()){
+            return {};
+        }
+        else{
+            return it->second;
+        }
+        /*std::vector<bool> rtv;
 
         auto *p=&root_node;
 //        std::vector<bool > rep;
@@ -342,8 +349,8 @@ namespace nzk{
             }
 
             rem-=0.5;
-            rp+=alpha_base;
             alpha_base/=2;
+            rp+=alpha_base;
             rem*=2;
             err*=2;
 
@@ -363,7 +370,55 @@ namespace nzk{
             }
         }
 
-        return rtv;
+        return rtv;*/
+    }
+
+    template<typename T>
+    template <typename Y>
+    PDDP<T>::PDDP(const PDDP_codebook<T,Y> &codebook, std::map<T,T> &&code_clu) {
+        for(const auto &[val,code]:codebook){
+            if(!_constr_code(val, code)){
+                root_node.delete_children();
+                break;
+            }
+        }
+        code_cluster=std::move(code_clu);
+    }
+
+    template<typename T>
+    template <typename Y>
+    bool PDDP<T>::_constr_code(const T &val, const std::vector<Y> &code) {
+        auto p=&root_node;
+
+        for(bool b:code){
+            if(p->val.has_value()){
+                return false;
+            }
+
+            if(b){  //b==1
+                if(!p->right){
+                    p->right=new node_type;
+                }
+                p=p->right;
+            }
+            else{
+                if(!p->left){
+                    p->left=new node_type;
+                }
+                p=p->left;
+            }
+        }
+        p->val=val;
+
+        return true;
+    }
+
+    template<typename T>
+    void PDDP<T>::gen_codebook() {
+        inner_codebook.reset(new PDDP_codebook<T>);
+        inner_codebook->reserve(size);
+
+        _make_codebook(*inner_codebook,&root_node);
     }
 }
 
